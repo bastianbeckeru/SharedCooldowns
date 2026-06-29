@@ -1,0 +1,21 @@
+name: SharedCooldowns
+version: '${version}'
+main: com.sharedcooldowns.SharedCooldowns
+api-version: '26.2'
+description: Manages command cooldowns with shared group support and CMI integration.
+author: Jnkyns
+softdepend:
+  - CMI
+commands:
+  sharedcooldowns:
+    description: SharedCooldowns admin commands
+    usage: /sharedcooldowns <reload|version>
+    aliases:
+      - scd
+permissions:
+  sharedcooldowns.admin:
+    description: Allows use of admin commands (reload, version)
+    default: op
+  sharedcooldowns.bypass:
+    description: Bypasses all cooldowns
+    default: op

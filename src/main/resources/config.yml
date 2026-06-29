@@ -1,0 +1,50 @@
+# ====================================================================
+#                   SharedCooldowns - Configuration
+# ====================================================================
+## Placeholders
+# %time_compact%  → "9d 5h 15m 30s"
+# %time_single%   → "9 days"
+# %player%        → Player's username
+# %command%       → The base command executed (e.g. /spawn)
+
+# Prefix for messages
+prefix: "&8[&b&lSC&8]&r "
+
+# Time formats
+time:
+  compact: "&b%days%&7d &b%hours%&7h &b%minutes%&7m &b%seconds%&7s"
+  single: "&b%value% %unit%"
+  units:
+    day: "day"
+    days: "days"
+    hour: "hour"
+    hours: "hours"
+    minute: "minute"
+    minutes: "minutes"
+    second: "second"
+    seconds: "seconds"
+
+## Cooldown groups
+# commands    - One or more commands sharing the same cooldown.
+# cooldown    - Duration in seconds.
+# conditional - If true, cooldown only applies if the action completes.
+# actions     - List of sequential actions to execute on the player when on cooldown.
+#               Supported tags: [actionbar], [title], [sound], [message] (default)
+cooldowns:
+  teleports:
+    commands:
+      - /spawn
+      - /home
+      - /tpa
+    cooldown: 900
+    conditional: true
+    actions:
+      - "[sound] block.note_block.pling 0.5 0.5"
+      - "[actionbar] &eYou must wait %time_single% &ebefore teleporting again"
+
+  example:
+    commands:
+      - /example
+    cooldown: 60
+    actions:
+      - "&eYou must wait %time_compact% before using this command again"
