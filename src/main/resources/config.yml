@@ -8,7 +8,7 @@
 # %command%       → The base command executed (e.g. /spawn)
 
 # Prefix for messages
-prefix: "&8[&b&lSC&8]&r "
+prefix: "&8[&b&lSCD&8]&r "
 
 # Time formats
 time:

@@ -1,0 +1,239 @@
+package com.sharedcooldowns.config;
+
+import com.sharedcooldowns.SharedCooldowns;
+import com.sharedcooldowns.cooldown.CooldownGroup;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.FileConfiguration;
+
+import java.util.*;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+/**
+ * Manages loading and reloading of the plugin configuration.
+ * Parses cooldown-groups and individual-cooldowns into {@link CooldownGroup} instances.
+ */
+public class ConfigManager {
+
+    private static final Pattern WHITESPACE_PATTERN = Pattern.compile("\\s+");
+
+    private final SharedCooldowns plugin;
+
+    private List<CooldownGroup> groups = List.of();
+    private Map<String, CooldownGroup> commandToGroup = Map.of();
+    private String prefix = "";
+    private String compactFormat = "&b%days%&7d &b%hours%&7h &b%minutes%&7m &b%seconds%&7s";
+    private String singleFormat = "&b%value% %unit%";
+    private Map<String, String> timeUnits = Map.of();
+
+    public ConfigManager(SharedCooldowns plugin) {
+        this.plugin = plugin;
+        this.plugin.saveDefaultConfig();
+        load();
+    }
+
+    /**
+     * Reloads the configuration from disk and re-parses all groups.
+     */
+    public void reload() {
+        plugin.reloadConfig();
+        load();
+    }
+
+    private void load() {
+        FileConfiguration config = plugin.getConfig();
+        List<CooldownGroup> parsedGroups = new ArrayList<>();
+
+        // --- Parse prefix ---
+        prefix = config.getString("prefix", "");
+        if (prefix == null) {
+            prefix = "";
+        }
+
+        // --- Parse time formats ---
+        compactFormat = config.getString("time.compact", "&b%days%&7d &b%hours%&7h &b%minutes%&7m &b%seconds%&7s");
+        if (compactFormat == null) {
+            compactFormat = "&b%days%&7d &b%hours%&7h &b%minutes%&7m &b%seconds%&7s";
+        }
+        singleFormat = config.getString("time.single", "&b%value% %unit%");
+        if (singleFormat == null) {
+            singleFormat = "&b%value% %unit%";
+        }
+
+        Map<String, String> unitsMap = new HashMap<>();
+        ConfigurationSection unitsSection = config.getConfigurationSection("time.units");
+        if (unitsSection != null) {
+            for (String key : unitsSection.getKeys(false)) {
+                String val = unitsSection.getString(key);
+                unitsMap.put(key, val != null ? val : key);
+            }
+        } else {
+            // Default units fallback
+            unitsMap.put("day", "day");
+            unitsMap.put("days", "days");
+            unitsMap.put("hour", "hour");
+            unitsMap.put("hours", "hours");
+            unitsMap.put("minute", "minute");
+            unitsMap.put("minutes", "minutes");
+            unitsMap.put("second", "second");
+            unitsMap.put("seconds", "seconds");
+        }
+        timeUnits = Map.copyOf(unitsMap);
+
+        // --- Parse cooldowns ---
+        ConfigurationSection cooldownsSection = config.getConfigurationSection("cooldowns");
+        if (cooldownsSection != null) {
+            for (String groupId : cooldownsSection.getKeys(false)) {
+                ConfigurationSection section = cooldownsSection.getConfigurationSection(groupId);
+                if (section == null) {
+                    continue;
+                }
+                
+                List<String> rawCommands = section.getStringList("commands");
+                Set<String> commands = rawCommands.stream()
+                        .map(this::normalizeCommand)
+                        .collect(Collectors.toUnmodifiableSet());
+                
+                int cooldown = section.getInt("cooldown", 30);
+                
+                List<String> actions;
+                if (section.contains("actions")) {
+                    actions = section.getStringList("actions");
+                } else {
+                    String msg = section.getString("message");
+                    if (msg != null) {
+                        actions = List.of(msg);
+                    } else {
+                        actions = List.of("&cCooldown active. Wait %time_compact%.");
+                    }
+                }
+                
+                boolean conditional = section.getBoolean("conditional", false);
+
+                if (!commands.isEmpty()) {
+                    parsedGroups.add(new CooldownGroup(
+                        "group:" + groupId,
+                        commands,
+                        cooldown,
+                        actions,
+                        conditional
+                    ));
+                }
+            }
+        }
+
+        groups = List.copyOf(parsedGroups);
+
+        // Build command → group lookup map
+        Map<String, CooldownGroup> lookup = new HashMap<>();
+        for (CooldownGroup group : parsedGroups) {
+            for (String cmd : group.commands()) {
+                lookup.put(cmd, group);
+            }
+        }
+        commandToGroup = Map.copyOf(lookup);
+
+        plugin.getLogger().info("Loaded " + parsedGroups.size() + " cooldown group(s) with " + lookup.size() + " command(s).");
+    }
+
+    /**
+     * Formats remaining time in seconds into a compact string (%time_compact%).
+     */
+    public String formatTimeCompact(long remainingSeconds) {
+        long days = remainingSeconds / 86400;
+        long hours = (remainingSeconds % 86400) / 3600;
+        long minutes = (remainingSeconds % 3600) / 60;
+        long seconds = remainingSeconds % 60;
+
+        String[] parts = WHITESPACE_PATTERN.split(compactFormat);
+        List<String> resultParts = new ArrayList<>();
+
+        for (String part : parts) {
+            if (part.contains("%days%")) {
+                if (days > 0) {
+                    resultParts.add(part.replace("%days%", String.valueOf(days)));
+                }
+            } else if (part.contains("%hours%")) {
+                if (hours > 0) {
+                    resultParts.add(part.replace("%hours%", String.valueOf(hours)));
+                }
+            } else if (part.contains("%minutes%")) {
+                if (minutes > 0) {
+                    resultParts.add(part.replace("%minutes%", String.valueOf(minutes)));
+                }
+            } else if (part.contains("%seconds%")) {
+                if (seconds > 0 || resultParts.isEmpty()) {
+                    resultParts.add(part.replace("%seconds%", String.valueOf(seconds)));
+                }
+            } else {
+                resultParts.add(part);
+            }
+        }
+        return String.join(" ", resultParts);
+    }
+
+    /**
+     * Formats remaining time in seconds to the single largest unit only (%time_single%).
+     */
+    public String formatTimeSingle(long remainingSeconds) {
+        long value;
+        String unitKey;
+        if (remainingSeconds >= 86400) {
+            value = remainingSeconds / 86400;
+            unitKey = (value == 1) ? "day" : "days";
+        } else if (remainingSeconds >= 3600) {
+            value = remainingSeconds / 3600;
+            unitKey = (value == 1) ? "hour" : "hours";
+        } else if (remainingSeconds >= 60) {
+            value = remainingSeconds / 60;
+            unitKey = (value == 1) ? "minute" : "minutes";
+        } else {
+            value = remainingSeconds;
+            unitKey = (value == 1) ? "second" : "seconds";
+        }
+        
+        String unit = timeUnits.getOrDefault(unitKey, unitKey);
+        return singleFormat
+            .replace("%value%", String.valueOf(value))
+            .replace("%unit%", unit);
+    }
+
+    /**
+     * Normalizes a command string: lowercase, strip leading '/'.
+     * Example: "/Home" → "home", "spawn" → "spawn"
+     */
+    private String normalizeCommand(String cmd) {
+        if (cmd == null) {
+            return "";
+        }
+        String trimmed = cmd.trim();
+        if (trimmed.startsWith("/")) {
+            trimmed = trimmed.substring(1);
+        }
+        return trimmed.toLowerCase();
+    }
+
+    public List<CooldownGroup> getGroups() {
+        return groups;
+    }
+
+    public Map<String, CooldownGroup> getCommandToGroup() {
+        return commandToGroup;
+    }
+
+    public String getPrefix() {
+        return prefix;
+    }
+
+    public String getCompactFormat() {
+        return compactFormat;
+    }
+
+    public String getSingleFormat() {
+        return singleFormat;
+    }
+
+    public Map<String, String> getTimeUnits() {
+        return timeUnits;
+    }
+}
