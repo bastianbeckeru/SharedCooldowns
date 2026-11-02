@@ -9,7 +9,8 @@ A lightweight Minecraft plugin that lets you define groups of commands sharing a
 ## Features
 
 - Group multiple commands under a single shared cooldown
-- Conditional cooldowns — only applied if the action completes successfully
+- Conditional cooldowns — the cooldown starts only when the player actually teleports
+- Cooldowns persist across restarts and `/scd reload`
 - Custom actions on cooldown (actionbar, title, sound, message)
 - Fully configurable time formats and messages
 - Lightweight and performant
@@ -23,21 +24,21 @@ A lightweight Minecraft plugin that lets you define groups of commands sharing a
 3. Restart the server
 4. Edit `plugins/SharedCooldowns/config.yml` to your liking
 
-**Requirements:** Paper/Spigot 26.2+, Java 26+
+**Requirements:** Paper 26.3+, Java 25+
 
 ---
 
 ## Commands & Permissions
 
-| Permission | Description |
-|---|---|
-| `sharedcooldowns.admin` | Allows you to use `/scd reload` and `/scd version`  |
-| `sharedcooldowns.bypass` | Allows you to bypass any cooldown |
+| Command | Permission | Description |
+|---|---|---|
+| `/scd check` | `sharedcooldowns.check` (everyone) | Shows your active cooldowns |
+| `/scd check <player>` | `sharedcooldowns.admin` | Shows an online player's active cooldowns |
+| `/scd reset <player>` | `sharedcooldowns.admin` | Clears all of an online player's cooldowns |
+| `/scd reload` | `sharedcooldowns.admin` | Reloads the configuration |
+| `/scd version` | `sharedcooldowns.admin` | Shows the plugin version |
 
-| Command | Description  |
-|---|---|
-| `/scd reload` | Reload the configuration | 
-| `/scd version` | Check the plugin version | 
+`sharedcooldowns.bypass` skips all cooldowns.
 
 **Aliases:** `/sharedcooldowns`, `/scd`
 
@@ -46,6 +47,11 @@ A lightweight Minecraft plugin that lets you define groups of commands sharing a
 ## Configuration
 
 ```yaml
+pending-timeout: 120   # Seconds a conditional command waits for its teleport
+teleport-causes:       # Causes that count; ender pearls, portals, etc. are ignored
+  - COMMAND
+  - PLUGIN
+
 time:
   compact: "&b%days%&7d &b%hours%&7h &b%minutes%&7m &b%seconds%&7s"
   single: "&b%value% %unit%"
@@ -66,11 +72,21 @@ cooldowns:
       - /home
       - /tpa
     cooldown: 900        # Duration in seconds
-    conditional: true    # Only apply cooldown if the action completes
+    conditional: true    # Start the cooldown when the player teleports
     actions:
       - "[sound] block.note_block.pling 0.5 0.5"
       - "[actionbar] &eYou must wait %time_single% &ebefore teleporting again"
 ```
+
+### Conditional cooldowns
+
+A conditional command waits up to `pending-timeout` seconds for a teleport. The first teleport starts the cooldown. Any other command still waiting, such as a `/tpa` accepted later, has its teleport blocked while the cooldown runs.
+
+- Set `pending-timeout` above your slowest teleport (with CMI: `/tpa` accept time + warmup).
+- A failed command, such as `/home` with a wrong name, keeps waiting until the timeout. A teleport from another command with a counted cause can consume it, so it may start the cooldown or be blocked once.
+- If another plugin cancels the command, no cooldown starts. This includes CMI custom aliases that run several commands: list the commands they run instead.
+
+All messages of the `/scd` command are editable under `messages:` in `config.yml`.
 
 ### Actions
 
@@ -78,7 +94,7 @@ cooldowns:
 |---|---|---|
 | `[message]` | `[message] <text>` | Sends a chat message (default) |
 | `[actionbar]` | `[actionbar] <text>` | Sends an action bar message |
-| `[title]` | `[title] <title>\|<subtitle>` | Sends a title |
+| `[title]` | `[title] <title>;<subtitle>` | Sends a title |
 | `[sound]` | `[sound] <sound> <volume> <pitch>` | Plays a sound |
 
 ### Placeholders
@@ -89,6 +105,12 @@ cooldowns:
 | `%time_single%` | `9 days` | Remaining time, largest unit only |
 | `%player%` | `Steve` | Player's username |
 | `%command%` | `/spawn` | The command executed |
+
+---
+
+## Building
+
+Run `./gradlew build`. The jar is written to `build/libs/`. Requires JDK 25.
 
 ---
 

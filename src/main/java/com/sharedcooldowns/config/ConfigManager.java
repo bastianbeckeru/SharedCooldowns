@@ -4,9 +4,10 @@ import com.sharedcooldowns.SharedCooldowns;
 import com.sharedcooldowns.cooldown.CooldownGroup;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.event.player.PlayerTeleportEvent.TeleportCause;
+import com.sharedcooldowns.util.TimeFormatter;
 
 import java.util.*;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -15,7 +16,8 @@ import java.util.stream.Collectors;
  */
 public class ConfigManager {
 
-    private static final Pattern WHITESPACE_PATTERN = Pattern.compile("\\s+");
+    private static final int DEFAULT_PENDING_TIMEOUT = 120;
+    private static final List<String> DEFAULT_TELEPORT_CAUSES = List.of("COMMAND", "PLUGIN");
 
     private final SharedCooldowns plugin;
 
@@ -25,6 +27,8 @@ public class ConfigManager {
     private String compactFormat = "&b%days%&7d &b%hours%&7h &b%minutes%&7m &b%seconds%&7s";
     private String singleFormat = "&b%value% %unit%";
     private Map<String, String> timeUnits = Map.of();
+    private int pendingTimeoutSeconds = DEFAULT_PENDING_TIMEOUT;
+    private Set<TeleportCause> teleportCauses = Set.of();
 
     public ConfigManager(SharedCooldowns plugin) {
         this.plugin = plugin;
@@ -49,6 +53,20 @@ public class ConfigManager {
         if (prefix == null) {
             prefix = "";
         }
+
+        // --- Parse conditional settings ---
+        pendingTimeoutSeconds = config.getInt("pending-timeout", DEFAULT_PENDING_TIMEOUT);
+        List<String> causeNames = config.contains("teleport-causes")
+                ? config.getStringList("teleport-causes") : DEFAULT_TELEPORT_CAUSES;
+        Set<TeleportCause> causes = EnumSet.noneOf(TeleportCause.class);
+        for (String name : causeNames) {
+            try {
+                causes.add(TeleportCause.valueOf(name.trim().toUpperCase(Locale.ROOT)));
+            } catch (IllegalArgumentException e) {
+                plugin.getLogger().warning("Unknown teleport cause in config.yml: " + name);
+            }
+        }
+        teleportCauses = Set.copyOf(causes);
 
         // --- Parse time formats ---
         compactFormat = config.getString("time.compact", "&b%days%&7d &b%hours%&7h &b%minutes%&7m &b%seconds%&7s");
@@ -92,7 +110,7 @@ public class ConfigManager {
                 List<String> rawCommands = section.getStringList("commands");
                 Set<String> commands = rawCommands.stream()
                         .map(this::normalizeCommand)
-                        .collect(Collectors.toUnmodifiableSet());
+                        .collect(Collectors.toCollection(LinkedHashSet::new));
                 
                 int cooldown = section.getInt("cooldown", 30);
                 
@@ -112,7 +130,7 @@ public class ConfigManager {
 
                 if (!commands.isEmpty()) {
                     parsedGroups.add(new CooldownGroup(
-                        "group:" + groupId,
+                        groupId,
                         commands,
                         cooldown,
                         actions,
@@ -140,36 +158,7 @@ public class ConfigManager {
      * Formats remaining time in seconds into a compact string (%time_compact%).
      */
     public String formatTimeCompact(long remainingSeconds) {
-        long days = remainingSeconds / 86400;
-        long hours = (remainingSeconds % 86400) / 3600;
-        long minutes = (remainingSeconds % 3600) / 60;
-        long seconds = remainingSeconds % 60;
-
-        String[] parts = WHITESPACE_PATTERN.split(compactFormat);
-        List<String> resultParts = new ArrayList<>();
-
-        for (String part : parts) {
-            if (part.contains("%days%")) {
-                if (days > 0) {
-                    resultParts.add(part.replace("%days%", String.valueOf(days)));
-                }
-            } else if (part.contains("%hours%")) {
-                if (hours > 0) {
-                    resultParts.add(part.replace("%hours%", String.valueOf(hours)));
-                }
-            } else if (part.contains("%minutes%")) {
-                if (minutes > 0) {
-                    resultParts.add(part.replace("%minutes%", String.valueOf(minutes)));
-                }
-            } else if (part.contains("%seconds%")) {
-                if (seconds > 0 || resultParts.isEmpty()) {
-                    resultParts.add(part.replace("%seconds%", String.valueOf(seconds)));
-                }
-            } else {
-                resultParts.add(part);
-            }
-        }
-        return String.join(" ", resultParts);
+        return TimeFormatter.compact(compactFormat, remainingSeconds);
     }
 
     /**
@@ -219,6 +208,19 @@ public class ConfigManager {
 
     public Map<String, CooldownGroup> getCommandToGroup() {
         return commandToGroup;
+    }
+
+    public int getPendingTimeoutSeconds() {
+        return pendingTimeoutSeconds;
+    }
+
+    public Set<TeleportCause> getTeleportCauses() {
+        return teleportCauses;
+    }
+
+    /** Returns a message from the config, falling back to the plugin's bundled defaults. */
+    public String getMessage(String key) {
+        return Objects.requireNonNullElse(plugin.getConfig().getString("messages." + key), "");
     }
 
     public String getPrefix() {

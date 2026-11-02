@@ -10,3 +10,5 @@ build/
 *.iml
 .vscode/
 *.DS_Store
+# Gradle wrapper must be committed
+!gradle/wrapper/gradle-wrapper.jar

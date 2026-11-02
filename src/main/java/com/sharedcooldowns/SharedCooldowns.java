@@ -3,7 +3,7 @@ package com.sharedcooldowns;
 import com.sharedcooldowns.command.CooldownCommand;
 import com.sharedcooldowns.config.ConfigManager;
 import com.sharedcooldowns.cooldown.CooldownRegistry;
-import com.sharedcooldowns.listener.CmiTeleportListener;
+import com.sharedcooldowns.cooldown.PdcCooldownStore;
 import com.sharedcooldowns.listener.CommandListener;
 import com.sharedcooldowns.listener.TeleportListener;
 import org.bukkit.command.PluginCommand;
@@ -16,7 +16,7 @@ import org.bukkit.plugin.java.JavaPlugin;
  * Features:
  * - Individual and shared (group) command cooldowns
  * - Conditional cooldowns that only activate when actions complete (e.g. teleports)
- * - CMI integration for accurate teleport detection
+ * - Cooldowns persist across restarts
  * - Configurable messages with color code support
  * - Admin commands for reload and version info
  */
@@ -24,30 +24,19 @@ public class SharedCooldowns extends JavaPlugin {
 
     private ConfigManager configManager;
     private CooldownRegistry cooldownRegistry;
+    private PdcCooldownStore cooldownStore;
 
     @Override
     public void onEnable() {
         // Initialize core systems
-        cooldownRegistry = new CooldownRegistry();
+        cooldownStore = new PdcCooldownStore(this);
+        cooldownRegistry = new CooldownRegistry(cooldownStore, System::currentTimeMillis);
         configManager = new ConfigManager(this);
 
         // Register event listeners
         PluginManager pluginManager = getServer().getPluginManager();
         pluginManager.registerEvents(new CommandListener(this), this);
         pluginManager.registerEvents(new TeleportListener(this), this);
-
-        // Register CMI-specific listener if CMI is present
-        if (pluginManager.getPlugin("CMI") != null) {
-            try {
-                pluginManager.registerEvents(new CmiTeleportListener(this), this);
-                getLogger().info("CMI detected — CMI teleport listener registered.");
-            } catch (Exception e) {
-                getLogger().warning("CMI detected but could not register CMI listener: " + e.getMessage());
-                getLogger().warning("Falling back to generic Paper listener.");
-            }
-        } else {
-            getLogger().info("CMI not detected — using generic teleport listener.");
-        }
 
         // Register admin command
         PluginCommand scCommand = getCommand("sharedcooldowns");
@@ -57,19 +46,23 @@ public class SharedCooldowns extends JavaPlugin {
             scCommand.setTabCompleter(commandHandler);
         }
 
-        getLogger().info("SharedCooldowns v" + getDescription().getVersion() + " enabled successfully.");
+        getLogger().info("SharedCooldowns v" + getPluginMeta().getVersion() + " enabled successfully.");
     }
 
     @Override
     public void onDisable() {
         if (cooldownRegistry != null) {
-            cooldownRegistry.clearAll();
+            cooldownRegistry.clearAllPending();
         }
         getLogger().info("SharedCooldowns disabled.");
     }
 
     public ConfigManager getConfigManager() {
         return configManager;
+    }
+
+    public PdcCooldownStore getCooldownStore() {
+        return cooldownStore;
     }
 
     public CooldownRegistry getCooldownRegistry() {
