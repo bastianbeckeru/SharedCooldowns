@@ -10,6 +10,16 @@
 # Prefix for messages
 prefix: "&8[&b&lSCD&8]&r "
 
+# Seconds a conditional command waits for its teleport before it is forgotten.
+# Must be longer than your slowest teleport: with CMI, /tpa accept time + warmup.
+pending-timeout: 120
+
+# Teleport causes that count for conditional cooldowns. Other causes, such as
+# ENDER_PEARL, CONSUMABLE_EFFECT or NETHER_PORTAL, are ignored.
+teleport-causes:
+  - COMMAND
+  - PLUGIN
+
 # Time formats
 time:
   compact: "&b%days%&7d &b%hours%&7h &b%minutes%&7m &b%seconds%&7s"
@@ -24,12 +34,31 @@ time:
     second: "second"
     seconds: "seconds"
 
+# Messages for the /scd command.
+# check-entry also accepts %group%, %commands%, %time_compact% and %time_single%.
+messages:
+  no-permission: "&cYou don't have permission to use this command."
+  player-not-found: "&cPlayer &e%target% &cis not online."
+  check-header: "&fActive cooldowns of &e%target%&f:"
+  check-entry: "&8- &7%commands%&8: %time_compact%"
+  check-empty: "&e%target% &fhas no active cooldowns."
+  check-header-self: "&fYour active cooldowns:"
+  check-empty-self: "&fYou have no active cooldowns."
+  reset-done: "&fCleared &e%count% &fcooldown(s) of &e%target%&f."
+  reload-done: "&fConfiguration reloaded successfully."
+  usage-header: "&fUsage:"
+  usage-check: "&e/scd check &8- &7Shows your active cooldowns"
+  usage-check-others: "&e/scd check <player> &8- &7Shows a player's active cooldowns"
+  usage-reset: "&e/scd reset <player> &8- &7Clears all of a player's cooldowns"
+  usage-reload: "&e/scd reload &8- &7Reloads the configuration"
+  usage-version: "&e/scd version &8- &7Shows the plugin version"
+
 ## Cooldown groups
 # commands    - One or more commands sharing the same cooldown.
 # cooldown    - Duration in seconds.
-# conditional - If true, cooldown only applies if the action completes.
+# conditional - If true, the cooldown starts when the player actually teleports.
 # actions     - List of sequential actions to execute on the player when on cooldown.
-#               Supported tags: [actionbar], [title], [sound], [message] (default)
+#               Supported tags: [actionbar], [title] (title;subtitle), [sound], [message] (default)
 cooldowns:
   teleports:
     commands:

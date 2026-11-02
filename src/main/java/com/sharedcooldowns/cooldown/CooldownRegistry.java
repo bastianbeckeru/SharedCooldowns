@@ -1,156 +1,139 @@
 package com.sharedcooldowns.cooldown;
 
+import java.util.ArrayDeque;
+import java.util.Collection;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
 
 /**
- * In-memory registry of active cooldowns and pending conditional actions.
+ * Tracks active cooldowns and conditional commands waiting for their teleport.
  *
- * Thread-safe via ConcurrentHashMap. No schedulers — uses lazy cleanup
- * on every access to purge expired entries.
+ * Every conditional command queues its own pending entry, oldest first. The first
+ * teleport starts the cooldown; a later teleport from another queued command (for
+ * example a /tpa accepted afterwards) arrives during the cooldown and is blocked.
+ *
+ * Not thread-safe: use from the main server thread only.
  */
 public class CooldownRegistry {
 
-    /** Pending actions expire after 30 seconds if not confirmed. */
-    private static final long PENDING_TIMEOUT_MS = 30_000L;
+    /** Bounds memory if a player spams commands that never teleport. */
+    static final int MAX_PENDING_PER_PLAYER = 16;
+
+    private final CooldownStore store;
+    private final LongSupplier clock;
+    private final Map<UUID, Deque<Pending>> pending = new HashMap<>();
+
+    public CooldownRegistry(CooldownStore store, LongSupplier clock) {
+        this.store = store;
+        this.clock = clock;
+    }
 
     /**
-     * Active cooldowns: playerUUID → (groupId → expiresAtMillis).
+     * Returns the remaining seconds, rounded up so a cooldown never ends early.
+     * Capped at the group's duration, so lowering it in the config takes effect
+     * on cooldowns that are already running.
      */
-    private final ConcurrentHashMap<UUID, ConcurrentHashMap<String, Long>> activeCooldowns = new ConcurrentHashMap<>();
-
-    /**
-     * Pending conditional actions: playerUUID → PendingAction.
-     * When a conditional command (e.g. /home) is executed, we store it here
-     * and only apply the cooldown when the action (teleport) completes.
-     */
-    private final ConcurrentHashMap<UUID, PendingAction> pendingActions = new ConcurrentHashMap<>();
-
-    /**
-     * Returns the remaining cooldown time in seconds for a player and group.
-     * Returns 0 if no cooldown is active or it has expired.
-     */
-    public long getRemainingSeconds(UUID playerUUID, String groupId) {
-        ConcurrentHashMap<String, Long> playerCooldowns = activeCooldowns.get(playerUUID);
-        if (playerCooldowns == null) {
+    public long getRemainingSeconds(UUID playerId, CooldownGroup group) {
+        long expiresAt = store.getExpiresAt(playerId, group.id());
+        if (expiresAt == 0) {
             return 0;
         }
-
-        Long expiresAt = playerCooldowns.get(groupId);
-        if (expiresAt == null) {
+        long remainingMillis = Math.min(expiresAt - clock.getAsLong(), group.cooldownSeconds() * 1000L);
+        if (remainingMillis <= 0) {
+            store.remove(playerId, group.id());
             return 0;
         }
+        return (remainingMillis + 999) / 1000;
+    }
 
-        long remaining = (expiresAt - System.currentTimeMillis()) / 1000;
+    public void applyCooldown(UUID playerId, CooldownGroup group) {
+        store.setExpiresAt(playerId, group.id(), clock.getAsLong() + group.cooldownSeconds() * 1000L);
+    }
 
-        if (remaining <= 0) {
-            // Lazy cleanup: remove expired entry
-            playerCooldowns.remove(groupId);
-            if (playerCooldowns.isEmpty()) {
-                activeCooldowns.remove(playerUUID, playerCooldowns);
+    /** Queues a conditional command that waits up to {@code timeoutSeconds} for its teleport. */
+    public void markPending(UUID playerId, CooldownGroup group, String command, int timeoutSeconds) {
+        Deque<Pending> queue = pending.computeIfAbsent(playerId, id -> new ArrayDeque<>());
+        if (queue.size() >= MAX_PENDING_PER_PLAYER) {
+            queue.pollFirst();
+        }
+        queue.addLast(new Pending(group, command, clock.getAsLong() + timeoutSeconds * 1000L));
+    }
+
+    /**
+     * Returns the pending command if this teleport must be blocked because its
+     * group is already on cooldown, consuming it. Returns null if it may proceed.
+     */
+    public Pending takeBlockedTeleport(UUID playerId) {
+        Pending oldest = oldestLive(playerId);
+        if (oldest == null || getRemainingSeconds(playerId, oldest.group()) == 0) {
+            return null;
+        }
+        removeOldest(playerId);
+        return oldest;
+    }
+
+    /** Consumes the oldest pending command after a teleport and starts its cooldown. */
+    public boolean confirmTeleport(UUID playerId) {
+        Pending oldest = oldestLive(playerId);
+        if (oldest == null) {
+            return false;
+        }
+        removeOldest(playerId);
+        applyCooldown(playerId, oldest.group());
+        return true;
+    }
+
+    /**
+     * Clears all of a player's cooldowns and pending commands, so a teleport still
+     * on its way cannot restart the cooldown.
+     *
+     * @return how many of the given groups had an active cooldown
+     */
+    public int resetAll(UUID playerId, Collection<CooldownGroup> groups) {
+        int active = 0;
+        for (CooldownGroup group : groups) {
+            if (getRemainingSeconds(playerId, group) > 0) {
+                active++;
             }
-            return 0;
         }
-
-        return remaining;
+        store.removeAll(playerId);
+        clearPending(playerId);
+        return active;
     }
 
-    /**
-     * Checks if a player has an active cooldown for the given group.
-     */
-    public boolean hasCooldown(UUID playerUUID, String groupId) {
-        return getRemainingSeconds(playerUUID, groupId) > 0;
+    public void clearPending(UUID playerId) {
+        pending.remove(playerId);
     }
 
-    /**
-     * Applies a cooldown to a player for a specific group.
-     *
-     * @param playerUUID      The player's UUID.
-     * @param groupId         The cooldown group identifier.
-     * @param durationSeconds Cooldown duration in seconds.
-     */
-    public void applyCooldown(UUID playerUUID, String groupId, int durationSeconds) {
-        ConcurrentHashMap<String, Long> playerCooldowns = activeCooldowns.computeIfAbsent(playerUUID, k -> new ConcurrentHashMap<>());
-        playerCooldowns.put(groupId, System.currentTimeMillis() + (durationSeconds * 1000L));
+    public void clearAllPending() {
+        pending.clear();
     }
 
-    /**
-     * Marks that a conditional command was executed and is awaiting confirmation
-     * (e.g. a teleport needs to complete before the cooldown is applied).
-     *
-     * @param playerUUID The player who executed the command.
-     * @param group      The cooldown group the command belongs to.
-     */
-    public void markPending(UUID playerUUID, CooldownGroup group) {
-        pendingActions.put(playerUUID, new PendingAction(group, System.currentTimeMillis()));
-    }
-
-    /**
-     * Confirms a pending action (e.g. teleport completed) and applies the cooldown.
-     *
-     * @param playerUUID The player whose pending action completed.
-     * @return true if a pending action was found and cooldown was applied.
-     */
-    public boolean confirmPending(UUID playerUUID) {
-        PendingAction pending = pendingActions.remove(playerUUID);
-        if (pending == null) {
-            return false;
+    private Pending oldestLive(UUID playerId) {
+        Deque<Pending> queue = pending.get(playerId);
+        if (queue == null) {
+            return null;
         }
-
-        // Check if the pending action has expired (30s timeout)
-        if (System.currentTimeMillis() - pending.createdAt() > PENDING_TIMEOUT_MS) {
-            return false;
+        long now = clock.getAsLong();
+        queue.removeIf(entry -> entry.expiresAt() <= now);
+        if (queue.isEmpty()) {
+            pending.remove(playerId);
+            return null;
         }
-
-        applyCooldown(playerUUID, pending.group().id(), pending.group().cooldownSeconds());
-        return true;
+        return queue.peekFirst();
     }
 
-    /**
-     * Cancels a pending action without applying the cooldown.
-     *
-     * @param playerUUID The player whose pending action should be cancelled.
-     */
-    public void cancelPending(UUID playerUUID) {
-        pendingActions.remove(playerUUID);
-    }
-
-    /**
-     * Checks whether a player has a pending conditional action.
-     */
-    public boolean hasPending(UUID playerUUID) {
-        PendingAction pending = pendingActions.get(playerUUID);
-        if (pending == null) {
-            return false;
+    private void removeOldest(UUID playerId) {
+        Deque<Pending> queue = pending.get(playerId);
+        queue.pollFirst();
+        if (queue.isEmpty()) {
+            pending.remove(playerId);
         }
-
-        // Auto-expire stale pending actions
-        if (System.currentTimeMillis() - pending.createdAt() > PENDING_TIMEOUT_MS) {
-            pendingActions.remove(playerUUID, pending);
-            return false;
-        }
-
-        return true;
     }
 
-    /**
-     * Clears all cooldowns and pending actions. Used on plugin reload.
-     */
-    public void clearAll() {
-        activeCooldowns.clear();
-        pendingActions.clear();
-    }
-
-    /**
-     * Removes all data for a specific player. Useful on player quit.
-     */
-    public void clearPlayer(UUID playerUUID) {
-        activeCooldowns.remove(playerUUID);
-        pendingActions.remove(playerUUID);
-    }
-
-    /**
-     * Represents a command execution awaiting confirmation before cooldown applies.
-     */
-    private record PendingAction(CooldownGroup group, long createdAt) {}
+    /** A conditional command waiting for its teleport. */
+    public record Pending(CooldownGroup group, String command, long expiresAt) {}
 }

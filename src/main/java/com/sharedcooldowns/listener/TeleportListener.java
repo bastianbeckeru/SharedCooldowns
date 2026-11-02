@@ -6,44 +6,53 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 
-import java.util.logging.Level;
-
 /**
- * Listens for teleport events to confirm conditional cooldowns.
- *
- * Dual strategy:
- * 1. CMI events (if CMI is present) — handled by {@link CmiTeleportListener}.
- * 2. Paper's {@link PlayerTeleportEvent} at MONITOR priority as fallback.
- *
- * MONITOR priority ensures all other plugins have already decided whether
- * to cancel the event. We only confirm the cooldown if the teleport
- * was NOT cancelled.
+ * Resolves conditional commands from the real teleport, which every plugin goes
+ * through. Only the configured causes count, so ender pearls, chorus fruit and
+ * portals neither start a cooldown nor get blocked.
  */
 public class TeleportListener implements Listener {
 
     private final SharedCooldowns plugin;
+    private final ActionExecutor actions;
 
     public TeleportListener(SharedCooldowns plugin) {
         this.plugin = plugin;
+        this.actions = new ActionExecutor(plugin);
+    }
+
+    /** Blocks a teleport left over from a queued command once the cooldown is running. */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onTeleportCheck(PlayerTeleportEvent event) {
+        if (!countsAsTeleport(event)) {
+            return;
+        }
+        Player player = event.getPlayer();
+        CooldownRegistry registry = plugin.getCooldownRegistry();
+        CooldownRegistry.Pending blocked = registry.takeBlockedTeleport(player.getUniqueId());
+        if (blocked != null) {
+            event.setCancelled(true);
+            actions.execute(player, blocked.group().actions(),
+                    registry.getRemainingSeconds(player.getUniqueId(), blocked.group()), blocked.command());
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onPlayerTeleport(PlayerTeleportEvent event) {
-        Player player = event.getPlayer();
-        CooldownRegistry registry = plugin.getCooldownRegistry();
-
-        // Only process if this player has a pending conditional cooldown
-        if (!registry.hasPending(player.getUniqueId())) {
-            return;
+    public void onTeleportConfirm(PlayerTeleportEvent event) {
+        if (countsAsTeleport(event)) {
+            plugin.getCooldownRegistry().confirmTeleport(event.getPlayer().getUniqueId());
         }
+    }
 
-        // The teleport was not cancelled (ignoreCancelled = true ensures this),
-        // so confirm the pending action and apply the cooldown.
-        boolean confirmed = registry.confirmPending(player.getUniqueId());
-        if (confirmed) {
-            plugin.getLogger().log(Level.FINE, "Cooldown confirmed for " + player.getName() + " via generic teleport event.");
-        }
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        plugin.getCooldownStore().purgeExpired(event.getPlayer(), System.currentTimeMillis());
+    }
+
+    private boolean countsAsTeleport(PlayerTeleportEvent event) {
+        return plugin.getConfigManager().getTeleportCauses().contains(event.getCause());
     }
 }
