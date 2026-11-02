@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon512.png" alt="SharedCooldowns icon" width="128">
+</p>
+
 # SharedCooldowns
 
 > Group commands together and enforce a shared cooldown across all of them.
